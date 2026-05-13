@@ -16,14 +16,17 @@ services:
       - ./data.dump:/docker-entrypoint-initdb.d/data.dump
       - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
       - postgres-data:/var/lib/postgresql/data
-  cloudbeaver:
-    image: dbeaver/cloudbeaver:latest
+  pgadmin:
+    image: dpage/pgadmin4
     restart: on-failure
-    container_name: cloudbeaver
+    container_name: pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD}
     ports:
-      - "${CLOUDBEAVER_PORT}:8978"
+      - "${PGADMIN_PORT}:80"
     volumes:
-      - cloudbeaver-data:/opt/cloudbeaver/workspace
+      - pgadmin-data:/var/lib/pgadmin
 volumes:
   postgres-data:
-  cloudbeaver-data:
+  pgadmin-data:
