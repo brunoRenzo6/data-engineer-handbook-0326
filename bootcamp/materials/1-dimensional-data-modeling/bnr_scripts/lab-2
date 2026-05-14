@@ -1,0 +1,230 @@
+--lab-2
+
+
+drop table players_scd_v2;
+create table players_scd_v2 (
+	player_name varchar, 
+	scoring_class scoring_class, 
+	is_active boolean,
+	start_season integer,
+	end_season integer,
+	primary key (player_name, start_season)
+);
+
+
+-- full load SCD2
+insert into players_scd_v1
+with a as (
+	select 
+	player_name,
+	scoring_class,
+	is_active,
+	current_season,
+	lag(scoring_class, 1) over (partition by player_name order by current_season) as prev_scoring_class,
+	lag(is_active, 1) over (partition by player_name order by current_season) as prev_is_active
+	from players
+	order by player_name 
+),
+b as (
+	select 
+	*,
+	case 
+		when (prev_scoring_class != scoring_class) or (prev_is_active != is_active)
+			then 1 
+		else 0 end as change_indicator
+	from a
+),
+c as (
+	select
+	*,
+	sum(change_indicator) over (partition by player_name order by current_season) as streak_identifier
+	from b
+)
+select 
+player_name, 
+scoring_class, 
+is_active,
+min(current_season) as start_season,
+max(current_season) as end_season
+from c
+group by player_name, streak_identifier, scoring_class, is_active
+order by player_name, start_season
+
+
+
+
+
+
+-- a more eficient way to do full load SCD2
+truncate table players_scd_v2_2021;
+insert into players_scd_v2_2021
+with a as (
+	select 
+	player_name,
+	scoring_class,
+	is_active,
+	current_season,
+	row_number() over (partition by player_name order by current_season) as rn,
+	lag(scoring_class, 1) over (partition by player_name order by current_season) as prev_scoring_class,
+	lag(is_active, 1) over (partition by player_name order by current_season) as prev_is_active
+	from players
+	where current_season <= 2021 --hard cutoff to simulate incremental process later
+),
+b as (
+	select 
+	*,
+	case 
+		when rn = 1 
+			then 1
+		when (prev_scoring_class is distinct from scoring_class) or (prev_is_active is distinct from is_active)
+			then 1 
+		else 0 end as change_indicator
+	from a
+),
+c as (
+	select * from b
+	where change_indicator = 1
+)
+select 
+player_name, 
+scoring_class, 
+is_active,
+current_season as start_season,
+lead(current_season) over (partition by player_name order by current_season) as end_season
+from c
+order by player_name, current_season
+
+
+select * from players_scd_v2
+
+
+
+-- # checking the diffs between the two
+-- esentially the same, but while _v1 has end_season inclusive,
+-- _v2 has end_season exclusive
+select * 
+from players_scd_v1 as v1
+full outer join players_scd_v2 as v2
+on v1.player_name = v2.player_name
+	and v1.start_season = v2.start_season
+where v1.player_name is distinct from v2.player_name
+or v1.start_season is distinct from v2.start_season
+or v1.scoring_class is distinct from v2.scoring_class
+or v1.is_active is distinct from v2.is_active
+or v1.end_season is distinct from v2.end_season
+;
+-- Ok validated.
+
+
+select * 
+from players_scd_v2
+where player_name = 'Michael Jordan'
+order by player_name, start_season
+;
+
+
+
+------------------------------------------------------------------
+-- # ok so lets do an incremental processing now.
+-- note that we are doing only an icremental PROCESSING.
+-- because we will be still writing the full table.
+-- this could be a further improvement though.
+-- but it would require us to use UPSERT I guess.
+
+
+create table players_scd_incr (
+	player_name varchar, 
+	scoring_class scoring_class, 
+	is_active boolean,
+	start_season integer,
+	end_season integer,
+	primary key (player_name, start_season)
+);
+
+
+
+truncate table players_scd_incr;
+
+insert into players_scd_incr
+with last_players_scd as (
+	select * 
+	from players_scd_v2_2021
+	-- it has only data up to season 2021
+),
+new_players as (
+	select * 
+	from players
+	where current_season = 2022
+),
+historical_records as (
+	select * 
+	from last_players_scd
+	where end_season is not null
+),
+open_records as (
+	select * 
+	from last_players_scd
+	where end_season is null
+),
+new_players_f as (
+	select 
+		player_name, 
+		scoring_class, 
+		is_active, 
+		current_season as start_season, 
+		cast(null as integer) as end_season 
+	from new_players
+),
+open_records_2 as (
+	select 
+	* 
+	from open_records
+	union all 
+	select * from new_players_f
+), -- from now on we can simply apply the usual scd process to these records
+a as (
+	select 
+	*,
+	row_number() over (partition by player_name order by start_season) as rn,
+	lag(scoring_class) over (partition by player_name order by start_season) as prev_scoring_class,
+	lag(is_active) over (partition by player_name order by start_season) as prev_is_active
+	from open_records_2
+),
+open_records_3 as (
+	select
+	player_name,
+	scoring_class, 
+	is_active, 
+	start_season,
+	lead(start_season, 1) over (partition by player_name order by start_season) as end_season
+	from a
+	where (rn = 1)
+		or (scoring_class is distinct from prev_scoring_class)
+		or (is_active is distinct from prev_is_active)
+)
+select * from historical_records
+union all 
+select * from open_records_3
+order by player_name, start_season
+
+
+
+-- # Comparing whether the full load and the increamental are equal
+select * 
+from players_scd_v2 as v2
+full outer join players_scd_incr as i
+on v2.player_name = i.player_name
+	and v2.start_season = i.start_season
+where v2.player_name is distinct from i.player_name
+or v2.start_season is distinct from i.start_season
+or v2.scoring_class is distinct from i.scoring_class
+or v2.is_active is distinct from i.is_active
+or v2.end_season is distinct from i.end_season
+;
+-- Ok validated.
+
+
+
+
+
+

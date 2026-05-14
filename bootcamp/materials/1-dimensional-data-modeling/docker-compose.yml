@@ -27,6 +27,7 @@ services:
       - "${PGADMIN_PORT}:80"
     volumes:
       - pgadmin-data:/var/lib/pgadmin
+      - ./bnr_scripts:/var/lib/pgadmin/storage/${PGADMIN_STORAGE_FOLDER}
 volumes:
   postgres-data:
   pgadmin-data:

@@ -1,0 +1,53 @@
+select * from public.actor_films af
+limit 2;
+
+select * from information_schema.tables where table_schema like 'public';
+
+select * from information_schema.columns where table_schema like 'public';
+
+
+-- count number of rows and columns in each table
+with row_count as (
+	select 'actor_films' as table_name, count(*) from public.actor_films
+		union all 
+	select 'arena' as table_name, count(*) from public.arena
+		union all 
+	select 'devices' as table_name, count(*) from public.devices
+		union all 
+	select 'events' as table_name, count(*) from public.events
+		union all 
+	select 'player_seasons' as table_name, count(*) from public.player_seasons
+		union all 
+	select 'teams' as table_name, count(*) from public.teams
+		union all 
+	select 'users' as table_name, count(*) from public.users
+		union all 
+	select 'games' as table_name, count(*) from public.games
+		union all 
+	select 'game_details' as table_name, count(*) from public.game_details
+),
+column_count as (
+	select 
+		table_name, 
+		sum(1) as sum
+	from information_schema.columns 
+	where table_schema like 'public'
+	group by table_name 
+) 
+select 
+	coalesce(a.table_name, b.table_name) as table_name,
+	a.count as row_count,
+	b.sum as col_sum
+from row_count as a
+full join column_count as b
+on a.table_name = b.table_name
+order by row_count desc, col_sum desc
+;
+
+
+--guess this are the running queries
+select * from pg_stat_activity;
+
+--query history is not enabled
+-- select * from pg_stat_statements;
+-- SHOW log_statement;
