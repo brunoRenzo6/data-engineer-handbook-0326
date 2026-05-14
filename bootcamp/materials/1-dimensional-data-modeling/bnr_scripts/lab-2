@@ -227,4 +227,55 @@ or v2.end_season is distinct from i.end_season
 
 
 
+---------------------------------------------------------------
+-- # Anyway, lets just do some quick practicing with arrays and structs
+-- unnest = explode; these are just different dialects for the same function
+-- explode is the dialect used in Hive, Spark, and Databricks.
+
+drop type info_t;
+create type info_t as ( -- so this is a struct
+	scoring_class scoring_class,
+	is_active boolean,
+	static_info varchar
+)
+
+
+with a as (
+	select 
+	* 
+	from players
+	where current_season = 2021
+),
+b as (
+	select 
+	* 
+	from players
+	where current_season = 2022
+),
+c as(
+	select 
+	a.player_name,
+	array[
+		row(
+			a.scoring_class,
+			a.is_active,
+			'a'
+		)::info_t, 
+		row(
+			b.scoring_class,
+			b.is_active,
+			'b'
+		)::info_t
+	] as info_array
+	from a
+	join b
+		on a.player_name = b.player_name
+)
+select 
+player_name, 
+(unnest(info_array)).*
+from c;
+
+
+
 
