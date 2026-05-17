@@ -1,0 +1,60 @@
+-- lab-3__analytics
+
+
+-- what are the players that scored the most in a single game
+with a as (
+	select
+	cast(e.properties->>'pts' as integer) as pts,
+	v.properties->>'player_name_l' as player_name,
+	e.*
+	from edge e
+	join vertex v
+		on e.subj_identifier = v.identifier
+		and e.subj_type = v.type
+	where e.type = 'plays_in'
+	and v.type = 'player'
+)
+select * from a
+where pts is not null 
+order by pts desc
+;
+
+
+
+-- players w/ more points in a single team
+select 
+v1.properties->>'player_name_l' as player_name_l,
+v2.properties->>'nickname' as team_nickname,
+e.*
+from edge e
+join vertex v1
+	on e.subj_identifier = v1.identifier
+	and e.subj_type = v1.type
+join vertex v2
+	on e.obj_identifier = v2.identifier
+	and e.obj_type = v2.type
+where e.type = 'plays_on'
+and e.properties->>'pts' is not null
+order by cast(e.properties->>'pts' as numeric) desc
+;
+
+
+-- best duos
+select
+v1.properties->>'player_name_l' as sub_player_name_l, 
+v2.properties->>'player_name_l' as obj_player_name_l,
+(cast(e.properties->>'subj_pts' as numeric)
++ cast(e.properties->>'obj_pts' as numeric)) as sum_duo,
+e.*
+from edge e 
+join vertex v1
+	on e.subj_identifier = v1.identifier
+	and e.subj_type = v1.type
+join vertex v2
+	on e.obj_identifier = v2.identifier
+	and e.obj_type = v2.type
+where e.type in ('plays_against', 'shares_team')
+and e.properties->>'subj_pts' is not null
+and e.properties->>'obj_pts' is not null
+order by sum_duo desc
+limit 50

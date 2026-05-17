@@ -1,0 +1,123 @@
+-- lab-3__ddl
+
+
+create type vertex_type as enum (
+	'player', 'team', 'game'
+)
+;
+
+
+create type edge_type as enum (
+	'plays_against',
+	'shares_team',
+	'plays_in', -- plays in a game
+	'plays_on' -- plays on a team
+)
+;
+
+create table vertex (
+	identifier varchar,
+	type vertex_type,
+	properties JSON,
+	primary key (identifier, type)
+)
+;
+
+
+create table edge (
+	subj_identifier varchar,
+	subj_type vertex_type,
+	obj_identifier varchar,
+	obj_type vertex_type,
+	-- edge_identifier varchar,
+	type edge_type,
+	properties JSON,
+	primary key (
+		subj_identifier, subj_type,
+		obj_identifier, obj_type,
+		type
+	)
+)
+;
+
+
+-------------------------------
+-- Dedup the "team" table
+
+
+create table public.teams__new as 
+select * from public.teams limit 0
+;
+
+
+-- Snowflake: show grants on table public.teams
+select 
+*
+from information_schema.role_table_grants
+where table_schema = 'public' 
+and table_name = 'teams'
+;
+
+
+-- here we are just self-granting.
+-- but I wanted to do this again just for practice.
+-- in prod we would be granting to other actual roles
+grant insert, select, update, delete, truncate, references, trigger on public.teams__new to postgres
+
+
+
+
+select 
+*
+from information_schema.columns
+where table_schema = 'public' 
+and table_name = 'teams'
+order by ordinal_position
+;
+
+
+insert into public.teams__new 
+with dedup as (
+	select 
+	row_number() over (partition by team_id) as rn,
+	*
+	from public.teams
+)
+select 
+	"league_id",
+	"team_id",
+	"min_year",
+	"max_year",
+	"abbreviation",
+	"nickname",
+	"yearfounded",
+	"city",
+	"arena",
+	"arenacapacity",
+	"owner",
+	"generalmanager",
+	"headcoach",
+	"dleagueaffiliation"
+from dedup
+where rn=1
+;
+
+
+select * from public.teams__new
+
+select count(*) c
+from public.teams__new
+group by team_id
+order by c desc
+;
+
+
+alter table public.teams rename to teams__old;
+alter table public.teams__new rename to teams;
+
+
+select * from public.teams
+
+
+-- ok. validated
+

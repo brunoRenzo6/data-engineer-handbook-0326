@@ -1,0 +1,225 @@
+-- lab-3
+
+-- # games, 
+
+-- # game_details, 
+-- these have the games and the players that played in these games
+
+-- # teams
+
+--------------------------
+
+-- game vertex
+insert into vertex
+select 
+game_id as identifier,
+'game'::vertex_type as type,
+json_build_object (
+	'game_date_est', game_date_est, 
+	'home_team_id', home_team_id, 
+	'visitor_team_id', visitor_team_id, 
+	'pts_home', pts_home, 
+	'pts_away', pts_away
+) as properties
+from games
+;
+
+
+-- player vertex
+insert into vertex
+select 
+	player_id as identifier,
+	'player'::vertex_type as type,
+	json_build_object(
+	'player_name_l', array_agg(distinct player_name),
+	'n_games', count(*),
+	'pts', sum(pts),
+	'team_id_l', array_agg(distinct team_id)
+	)
+from game_details
+group by player_id
+;
+
+
+-- team vertex
+insert into vertex
+select
+team_id as identifier,
+'team'::vertex_type as type,
+json_build_object (
+	'nickname', nickname,
+	'city', city,
+	'arena', arena,
+	'min_year', min_year,
+	'max_year', max_year
+)
+from teams
+;
+
+
+
+
+
+select type, count(*) as c from vertex
+group by type
+order by c desc
+;
+
+
+-- player-game edge
+insert into edge
+with dedup as (
+	select
+	row_number() over (partition by player_id, game_id) as rn,
+	*
+	from game_details
+)
+select
+player_id as subj_identifier,
+'player'::vertex_type as subj_type,
+game_id as obj_identifier,
+'game'::vertex_type as obj_type,
+'plays_in'::edge_type type,
+json_build_object(
+	'start_position', start_position,
+	'pts', pts, 
+	'team_id', team_id
+) as properties
+from dedup
+where rn=1
+;
+
+
+-- player-team edge
+insert into edge
+with dedup as (
+	select
+	row_number() over (partition by player_id, game_id) as rn,
+	*
+	from game_details
+),
+a as (
+	select 
+	player_id, 
+	team_id, 
+	sum(pts) as pts,
+	sum(
+		round(
+			(
+			(split_part(min, ':', 1)::numeric) * 60
+			+
+			(split_part(min, ':', 2)::numeric))
+			/60
+		, 2)
+	) as minutes,
+	count(*) as n_games
+	from dedup
+	where rn=1
+	group by player_id, team_id
+)
+select
+	player_id as subj_identifier, 
+	'player'::vertex_type as subj_type,
+	team_id as obj_identifier,
+	'team'::vertex_type as obj_type,
+	'plays_on'::edge_type as type,
+	json_build_object(
+		'pts', pts,
+		'minutes', minutes,
+		'n_games', n_games
+	)
+from a
+;
+
+
+
+--player-player edge (against and together)
+insert into edge
+with dedup as (
+	select
+	row_number() over (partition by player_id, game_id) as rn,
+	*
+	from game_details
+),
+filtered as (
+	select * from dedup 
+	where rn=1
+),
+a as (
+	select 
+	f1.game_id as game_id,
+	f1.pts as subj_pts,
+	f2.pts obj_pts,
+	f1.min as subj_min,
+	f2.min as obj_min,
+	f1.player_id as subj_identifier,
+	f2.player_id as obj_identifier,
+	case 
+		when f1.team_id = f2.team_id 
+			then 'shares_team'
+		when f1.team_id != f2.team_id
+			then 'plays_against'
+		else null -- when nulls
+	end as type
+	from filtered f1
+	join filtered f2
+		on f1.game_id = f2.game_id
+		and f1.player_id > f2.player_id
+),
+b as (
+	select 
+	subj_identifier,
+	obj_identifier,
+	type,
+	sum(subj_pts) as subj_pts,
+	sum(obj_pts) as obj_pts,
+	sum(
+		round(
+			(
+			(split_part(subj_min, ':', 1)::numeric) * 60
+			+
+			(split_part(subj_min, ':', 2)::numeric))
+			/60
+		, 2)
+	) as subj_minutes,
+	sum(
+		round(
+			(
+			(split_part(obj_min, ':', 1)::numeric) * 60
+			+
+			(split_part(obj_min, ':', 2)::numeric))
+			/60
+		, 2)
+	) as obj_minutes,
+	count(*) as n_games,
+	array_agg(distinct game_id) as game_l
+	from a
+	group by subj_identifier, obj_identifier, type
+)
+select
+subj_identifier,
+'player'::vertex_type as subj_type,
+obj_identifier,
+'player'::vertex_type as obj_type,
+type::edge_type as type,
+json_build_object(
+	'subj_pts', subj_pts,
+	'obj_pts', obj_pts,
+	'subj_minutes', subj_minutes,
+	'obj_minutes', obj_minutes,
+	'n_games', n_games,
+	'game_l', game_l
+)
+from b
+;
+
+
+select type, count(*) as c from edge
+group by type
+order by c desc
+;
+
+
+
+
+
