@@ -58,3 +58,4 @@ and e.properties->>'subj_pts' is not null
 and e.properties->>'obj_pts' is not null
 order by sum_duo desc
 limit 50
+;

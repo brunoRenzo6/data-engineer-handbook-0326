@@ -1,0 +1,281 @@
+-- week-1__homework
+
+
+------------------------------------------
+-- # DDLs
+
+
+create type film as (
+	film_id varchar,
+	name varchar,
+	year integer,
+	votes integer,
+	rating real
+)
+;
+
+create type quality_class as enum (
+	'star', 'good', 'average', 'bad'
+)
+;
+
+
+create table actors (
+	actor_id varchar,
+	actor_name varchar,
+	films film[],
+	quality_class quality_class,
+	is_active boolean,
+	current_year integer,
+	primary key (actor_id, current_year)
+)
+;
+
+
+------------------------------------------
+-- ## Cumulative table generation query
+-- Write a query that populates the actors table one year at a time
+-- So essentially will be cumulative table with SDC1 (one snapshot per year)
+
+-- for brevity, lets work with data from 2010 to 2021 only
+select year, count(*) as c 
+from actor_films
+group by year
+order by year desc
+;
+
+--note that one actor can work in more than one film in a year
+with a as (
+	select actorid, year, count(*) as c 
+	from actor_films
+	group by actorid, year
+)
+select c, count(*) as cc from a
+group by c
+order by cc desc
+;
+
+-- lets assume there is only one actor name per actor id
+select actorid, count(distinct actor) as c
+from actor_films
+group by actorid
+order by c desc
+;
+
+
+
+insert into actors
+with actors_t as (
+	select * from actors
+	where current_year = 2020
+),
+new_batch as (
+	select * from actor_films
+	where year = 2021
+),
+new_batch_t as (
+	select 
+	actorid as actor_id,
+	min(actor) as actor_name, 
+	array_agg(row(
+		filmid,
+		film, 
+		year, 
+		votes, 
+		rating
+	)::film) as films,
+	case 
+		when avg(rating)>8 then 'star'::quality_class
+		when avg(rating)>7 then 'good'::quality_class
+		when avg(rating)>6 then 'average'::quality_class
+		when avg(rating)<=6 then 'bad'::quality_class
+	end as quality_class
+	from new_batch
+	group by actorid, year
+)
+select 
+	coalesce(nb.actor_id, a.actor_id) as actor_id, 
+	coalesce(nb.actor_name, a.actor_name) as actor_name, 
+	case 
+		when nb.films is null
+			then a.films
+		when a.films is null 
+			then nb.films
+		else
+			a.films || nb.films
+	end as films,
+	coalesce(nb.quality_class, a.quality_class) as quality_class, 
+	case 
+		when nb.actor_id is not null then True 
+		else False
+	end as is_active,
+	coalesce(nb.films[1].year, a.current_year+1) as current_year
+from actors_t a 
+full outer join new_batch_t nb
+	on a.actor_id = nb.actor_id
+;
+
+
+------------------------------------------
+-- # DDL for actors_history_scd table
+
+
+create table actors_history_scd (
+	actor_id varchar,
+	actor_name varchar,
+	quality_class quality_class,
+	is_active boolean,
+	start_date integer,
+	end_date integer,
+	primary key (actor_id, start_date)
+)
+;
+
+
+------------------------------------------
+-- # Backfill query for actors_history_scd
+-- Note that we are modeling SCD type 2 with EXCLUSIVE end_date
+-- Also, we are assuming all actors are persisted in the actors table
+
+insert into actors_history_scd
+with a as (
+	select
+	*,
+	row_number() over(partition by actor_id order by current_year) as rn,
+	lag(quality_class) over(partition by actor_id order by current_year) as prev_quality_class,
+	lag(is_active) over(partition by actor_id order by current_year) as prev_is_active
+	from actors
+)
+select
+actor_id, 
+actor_name,
+quality_class, 
+is_active,
+current_year as start_date,
+lead(current_year) over(partition by actor_id order by current_year) as end_date
+from a
+where rn=1
+	or quality_class is distinct from prev_quality_class
+	or is_active is distinct from prev_is_active
+order by actor_id, current_year
+;
+
+
+
+select * from actors_history_scd
+order by actor_id, start_date
+;
+
+
+------------------------------------------
+-- # Incremental query for actors_history_scd
+-- Note that we are modeling SCD type 2 with EXCLUSIVE end_date
+-- Also, we are assuming all actors are persisted in the actors table
+
+create table actors_history_scd_incr (
+	actor_id varchar,
+	actor_name varchar,
+	quality_class quality_class,
+	is_active boolean,
+	start_date integer,
+	end_date integer,
+	primary key (actor_id, start_date)
+)
+;
+
+
+create temp table actors_history_scd_incr_tmp as 
+select * from actors_history_scd_incr limit 0;
+
+--------------------------
+-- ## begin query 
+
+truncate actors_history_scd_incr_tmp;
+insert into actors_history_scd_incr_tmp
+with new_batch as (
+	select 
+	actor_id, 
+	actor_name,
+	quality_class, 
+	is_active,
+	current_year
+	from actors
+	where current_year = 2021
+),
+historical_records as (
+	select
+	*
+	from actors_history_scd_incr
+	where end_date is not null
+),
+open_records as (
+	select
+	actor_id, 
+	actor_name,
+	quality_class, 
+	is_active,
+	start_date as current_year
+	from actors_history_scd_incr
+	where end_date is null
+),
+a as ( -- we can then siply apply the standard scd2 process from here onwards
+	select * from open_records
+	union all
+	select * from new_batch
+	order by actor_id, current_year
+),
+b as (
+	select
+	*,
+	row_number() over(partition by actor_id order by current_year) as rn,
+	lag(quality_class) over(partition by actor_id order by current_year) as prev_quality_class,
+	lag(is_active) over(partition by actor_id order by current_year) as prev_is_active
+	from a
+),
+c as (
+	select 
+	actor_id, 
+	actor_name,
+	quality_class,
+	is_active,
+	current_year as start_date,
+	lead(current_year) over(partition by actor_id order by current_year) as end_date
+	from b
+	where rn=1
+		or quality_class is distinct from prev_quality_class
+		or is_active is distinct from prev_is_active
+)
+select * from historical_records
+union all
+select * from c
+;
+
+truncate actors_history_scd_incr;
+insert into actors_history_scd_incr
+select * from actors_history_scd_incr_tmp
+;
+
+
+-- ## end query 
+--------------------------
+
+select * from actors_history_scd_incr
+order by actor_id, start_date
+
+
+-- Comparing whether the full load and the increamental are equal
+select * 
+from actors_history_scd as a
+full outer join actors_history_scd_incr as i
+	on a.actor_id = i.actor_id
+	and a.start_date = i.start_date
+where a.actor_name is distinct from i.actor_name
+or a.quality_class is distinct from i.quality_class
+or a.is_active is distinct from i.is_active
+or a.end_date is distinct from i.end_date
+
+--ok. validated
+
+
+ 
+
