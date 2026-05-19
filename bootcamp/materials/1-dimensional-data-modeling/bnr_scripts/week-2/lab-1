@@ -1,0 +1,163 @@
+--lab-1
+
+----------------------------
+-- # Create a fact table
+
+
+create table fct_game_details (
+	dim_game_id integer,
+	dim_team_id integer,
+	dim_player_id integer,
+	dim_game_date_est date,
+	dim_season integer,
+	dim_start_position varchar, 
+	dim_did_not_play boolean,
+	dim_did_not_dress boolean,
+	dim_not_with_team boolean,
+	dim_is_home_team boolean,
+	m_minutes numeric, 
+	m_fgm real, 
+	m_fga real, 
+	m_fg3m real, 
+	m_fg3a real, 
+	m_ftm real, 
+	m_fta real, 
+	m_oreb real, 
+	m_dreb real, 
+	m_reb real, 
+	m_ast real, 
+	m_stl real, 
+	m_blk real, 
+	m_turnover real, 
+	m_pf real, 
+	m_pts real,
+	primary key (dim_game_id, dim_player_id)
+)
+
+
+
+
+-- there are some duplicates
+with a as (
+select game_id, player_id, count(*) as c 
+from game_details
+group by game_id, player_id
+)
+select c, count(*) as cc from a
+group by c
+order by cc desc
+;
+
+
+-- distinct types of comments
+with a as (
+select 
+trim(split_part(split_part(comment, '-', 1), '_', 1)) as comment_abv
+from game_details
+)
+select 
+comment_abv, count(comment_abv) as c
+from a
+group by comment_abv
+order by c desc
+;
+-- DNP: Did Not play
+-- DND: Did Not Dress
+-- NWT: Not With Team
+
+
+insert into fct_game_details
+with game_details_rn as (
+	select
+	*,
+	row_number() over(partition by game_id, player_id) as rn
+	from game_details
+),
+game_details_deduped as (
+	select
+	*,
+	trim(split_part(split_part(comment, '-', 1), '_', 1)) as comment_abv
+	from game_details_rn
+	where rn=1
+)
+select 
+gd.game_id as dim_game_id,
+gd.team_id as dim_team_id,
+gd.player_id as dim_player_id,
+g.game_date_est as dim_game_date_est,
+g.season as dim_season,
+gd.start_position as dim_start_position, 
+comment_abv = 'DNP' as dim_did_not_play,
+comment_abv = 'DND' as dim_did_not_dress,
+comment_abv = 'NWT' as dim_not_with_team,
+gd.team_id = g.home_team_id as dim_is_home_team,
+round(
+	cast(split_part(gd.min, ':', 1) as numeric)
+	+
+	cast(split_part(gd.min, ':', 2) as numeric)/60
+, 2) as m_minutes, 
+gd.fgm as m_fgm, 
+gd.fga as m_fga, 
+gd.fg3m as m_fg3m, 
+gd.fg3a as m_fg3a, 
+gd.ftm as m_ftm, 
+gd.fta as m_fta, 
+gd.oreb as m_oreb, 
+gd.dreb as m_dreb, 
+gd.reb as m_reb, 
+gd.ast as m_ast, 
+gd.stl as m_stl, 
+gd.blk as m_blk, 
+gd."TO" as m_turnover, 
+gd.pf as m_pf, 
+gd.pts as m_pts
+from game_details_deduped as gd
+left join games as g
+	on gd.game_id = g.game_id
+;
+
+
+----------------------------
+-- # quick analytics
+
+
+
+-- Players that have the highest pts diff between home and away games
+with a as(
+	select
+	dim_player_id, 
+	-- count(*) as n_games, 
+	-- sum(m_pts) as sum_pts,
+	sum(case when dim_is_home_team then 1 else 0 end) as n_games_home,
+	sum(case when dim_is_home_team then 0 else 1 end) as n_games_away,
+	sum(case when dim_is_home_team then m_pts else 0 end) as sum_pts_home,
+	sum(case when dim_is_home_team then 0 else m_pts end) as sum_pts_away
+	from fct_game_details
+	group by dim_player_id
+),
+b as (
+	select 
+	*,
+	case 
+		when n_games_home=0 then 0
+		else round(sum_pts_home::numeric/n_games_home, 2)
+	end as pts_per_game_home,
+	case 
+		when n_games_away=0 then 0
+		else round(sum_pts_away::numeric/n_games_away, 2)
+	end as pts_per_game_away
+	from a
+)
+select 
+gd.player_name, 
+b.* 
+from b
+left join (select distinct player_id, player_name from game_details) as gd
+	on b.dim_player_id = gd.player_id
+where pts_per_game_home is not null
+	and pts_per_game_away is not null
+	and n_games_home>30
+	and n_games_away>30
+order by abs(pts_per_game_home - pts_per_game_away) desc
+;
+

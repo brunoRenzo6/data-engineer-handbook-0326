@@ -105,11 +105,9 @@ a as (
 	sum(pts) as pts,
 	sum(
 		round(
-			(
-			(split_part(min, ':', 1)::numeric) * 60
+			(split_part(min, ':', 1)::numeric)
 			+
-			(split_part(min, ':', 2)::numeric))
-			/60
+			(split_part(min, ':', 2)::numeric)/60
 		, 2)
 	) as minutes,
 	count(*) as n_games
@@ -175,20 +173,16 @@ b as (
 	sum(obj_pts) as obj_pts,
 	sum(
 		round(
-			(
-			(split_part(subj_min, ':', 1)::numeric) * 60
+			(split_part(subj_min, ':', 1)::numeric)
 			+
-			(split_part(subj_min, ':', 2)::numeric))
-			/60
+			(split_part(subj_min, ':', 2)::numeric)/60
 		, 2)
 	) as subj_minutes,
 	sum(
 		round(
-			(
-			(split_part(obj_min, ':', 1)::numeric) * 60
+			(split_part(obj_min, ':', 1)::numeric)
 			+
-			(split_part(obj_min, ':', 2)::numeric))
-			/60
+			(split_part(obj_min, ':', 2)::numeric)/60
 		, 2)
 	) as obj_minutes,
 	count(*) as n_games,
