@@ -1,0 +1,118 @@
+--week-2_lab-2
+
+
+select * from events
+
+-------------------------------
+-- # Cumulative table
+
+drop table users_cumulated;
+create table users_cumulated (
+	user_id varchar,
+	dates_active date[],
+	date date,
+	primary key (user_id, date)
+)
+;
+
+
+select min(event_time::date), max(event_time::date) from events
+--2023-01-01, 2023-01-31
+
+
+
+insert into users_cumulated
+with yesterday as (
+	select * 
+	from users_cumulated
+	where date = '2023-01-30'
+),
+today as (
+	select
+	user_id::varchar as user_id,
+	cast(event_time as date) as date,
+	row_number() over(partition by user_id, cast(event_time as date)) as rn
+	from events
+	where 
+		cast(event_time as date) = '2023-01-31'
+		and user_id is not null
+),
+today_deduped as (
+	select * 
+	from today
+	where rn =1
+)
+select 
+coalesce(t.user_id, y.user_id) as user_id,
+case
+	when t.date is null
+		then y.dates_active
+	when y.dates_active is null
+		then ARRAY[t.date]
+	else 
+		ARRAY[t.date] || y.dates_active
+end as dates_active,
+coalesce(t.date, (y.date + interval '1 day')::date) as date
+from yesterday as y
+full outer join today_deduped as t
+	on y.user_id = t.user_id
+;
+
+
+
+select * from users_cumulated
+order by date desc
+;
+
+select
+date, 
+count(*) as c
+from users_cumulated
+group by date
+order by date desc
+;
+
+
+-------------------------------
+-- # Datelist
+
+
+with a as (
+	select * 
+	from users_cumulated
+	where date = '2023-01-30'
+),
+b as (
+	select generate_series('2023-01-01', '2023-01-30', interval '1 day')
+),
+c as (
+	select
+	*,
+	case
+		when dates_active @> array[generate_series::date]
+			then pow(2, 32 - (date-generate_series::date) -1)
+			-- note that the code from zach was missing this -1
+			-- we nee thids.
+			-- otherwise we will not be tracking wether the current_date was active or not
+		else 0
+	end as datelist_pow2
+	from a 
+	cross join b
+),
+d as (
+	select 
+	user_id,
+	min(date) as date,
+	min(dates_active) as dates_active, -- just for referece, we would not actually keep this one
+	sum(datelist_pow2)::bigint::bit(32) as datelist
+	from c
+	group by user_id
+)
+select
+*,
+bit_count(datelist)>0 as dim_monthly_active,
+bit_count('11111110000000000000000000000000'::bit(32) & datelist)>0 as dim_weekly_active,
+bit_count('10000000000000000000000000000000'::bit(32) & datelist)>0 as dim_daily_active
+from d
+;
+
