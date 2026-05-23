@@ -1,0 +1,379 @@
+-- week-2__homework
+
+
+select * from events;
+
+select * from devices;
+
+----------------------------------------------------------------
+-- # A query to deduplicate game_details from Day 1 so there's no duplicates
+
+-- quick look on the duplicates
+with dups as (
+	select 
+	game_id, player_id, count(*) as c
+	from game_details
+	group by game_id, player_id
+	having count(*) > 1
+)
+select * 
+from game_details as gd
+join dups as d
+	on gd.game_id = d.game_id
+	and gd.player_id = d.player_id
+order by gd.game_id, d.player_id
+;
+
+-- query to dedup
+with a as (
+	select
+	*,
+	row_number() over(partition by game_id, player_id) as rn
+	from game_details
+)
+select * 
+from a 
+where rn = 1
+;
+
+----------------------------------------------------------------
+-- # A DDL for an user_devices_cumulated
+-- (quick_note) Zach mentions that the type should be MAP<STRING, ARRAY[DATE]>,
+--   but in postgreSQL map is actually a json, 
+--   and json does not enforce that all values have same type.
+
+
+-- tracks users active days by device
+drop table user_devices_cumulated;
+create table user_devices_cumulated (
+	user_id numeric,
+	browser_type text,
+	date date,
+	device_activity_datelist date[],
+	primary key (user_id, browser_type, date)
+)
+;
+
+drop table user_devices_cumulated;
+create table user_devices_cumulated (
+	user_id numeric,
+	date date,
+	device_activity_datelist json,
+	primary key (user_id, date)
+)
+;
+-- device_activity_datelist (on last 7 days)
+
+----------------------------------------------------------------
+-- # A cumulative query to generate 'device_activity_datelist' from events
+
+-- Note that PostgreSQL does not have type MAP
+-- And if we try to model MAP<STRING, DATE[]> as a JSON,
+-- the DATE[] type will not be preserved when writing and will not be recognized when reading.
+-- PostgreSQL would simply store them as an array of JSON string, and we would them need to keep casting them back to DATE[].
+-- Furthermore, this DATE[] casting requires us to explode the array, cate to DATE, and then aggregate again.
+-- This MAP<STRING, DATE[]> typing would make more sense in another engine that preserved the datatypes though (e.g., Spark).
+-- We still used it here though, for learning purposes. After all, it will still reduce the table records nevertheless.
+
+
+-- quick snippet showing this behavior:
+select
+  'boolean',
+  pg_typeof(true)::text,
+  jsonb_typeof(to_jsonb(true)),
+  to_jsonb(true)
+union all 
+select
+  'date[]',
+  pg_typeof(array[date '2026-01-01', date '2026-01-02'])::text,
+  jsonb_typeof(to_jsonb(array[date '2026-01-01', date '2026-01-02'])),
+  to_jsonb(array[date '2026-01-01', date '2026-01-02'])
+;
+
+
+select min(event_time)::date, max(event_time)::date
+from events
+;
+-- 2023-01-01, 2023-01-31
+
+
+
+insert into user_devices_cumulated
+with prev_udc as (
+	select *
+	from user_devices_cumulated
+	where date = '2023-01-07'
+),
+today as (
+	select
+		distinct 
+		user_id, 
+		device_id,
+		cast(event_time as date) as date
+	from events
+	where 
+		cast(event_time as date) = '2023-01-08'
+		and user_id is not null
+		and device_id is not null
+),
+today_browsers as (
+	select
+	t.user_id, 
+	d.browser_type,
+	array[t.date] as datelist
+	from today t
+	left join devices d
+		on t.device_id = d.device_id
+	group by t.user_id, d.browser_type, t.date -- just for safety
+),
+prev_udc_typed as (
+	select
+		p.user_id, 
+		exploded_json.key as browser_type,
+		date,
+		array_agg(explored_array.value::date order by explored_array.value::date desc) as datelist
+	from prev_udc p
+	join lateral json_each(device_activity_datelist) as exploded_json on 1=1 
+	join lateral json_array_elements_text(exploded_json.value) as explored_array on 1=1
+	where date - explored_array.value::date < 6
+	group by p.user_id, exploded_json.key, date
+),
+j_json_exploded as (
+	select
+		coalesce(tb.user_id, p.user_id) as user_id,
+		coalesce(tb.browser_type, p.browser_type) as browser_type,
+		coalesce(tb.datelist[1], (p.date + interval '1 days')::date) as date,
+		case 
+			when tb.user_id is null
+				then p.datelist
+			when p.user_id is null
+				then tb.datelist
+			else
+				tb.datelist || p.datelist
+		end as datelist
+	from prev_udc_typed as p
+	full outer join today_browsers as tb
+		on p.user_id = tb.user_id
+		and p.browser_type = tb.browser_type
+)
+select 
+	user_id, 
+	date,
+	json_object_agg(browser_type, datelist order by browser_type) as device_activity_datelist
+from j_json_exploded
+group by user_id, date
+;
+
+
+select * from user_devices_cumulated
+order by user_id, date
+;
+
+select * from user_devices_cumulated
+where user_id = '9446887345398050000'
+order by date
+;
+-- this is one of the mot interesting cases with activity on >1 browser
+-- note that the activity on both browsers is indeed the same though.
+
+select * from user_devices_cumulated
+where user_id = '13852077118043200000'
+order by date
+;
+-- this is one of the most interesting cases with activity on >1 browser
+-- and with diff browsers at diff days.
+
+select * from user_devices_cumulated
+where user_id = '137925124111668560'
+;
+-- this case shows how we are effectivly trimming to only last 7 days
+
+
+--ok. validated
+
+
+
+----------------------------------------------------------------
+-- # A datelist_int generation query. 
+-- Convert the device_activity_datelist column into a datelist_int column
+
+
+with udc as (
+	select * 
+	from user_devices_cumulated
+	--where user_id = '13852077118043200000'
+),
+udc_typed as (
+	select
+	udc.user_id, 
+	udc.date, 
+	exploded_json.key as browser_type,
+	array_agg(exploded_array::date) as datelist
+	from udc 
+	join lateral json_each(device_activity_datelist) as exploded_json
+		on 1=1
+	join lateral json_array_elements_text(exploded_json.value) as exploded_array
+		on 1=1
+	group by udc.user_id, udc.date, exploded_json.key
+),
+udc_datelist_int as (
+	select
+	udct.user_id,
+	udct.date,
+	udct.browser_type,
+	udct.datelist, -- just for verifiability
+	sum(
+		case 
+			when udct.datelist @> array[gn::date]
+				then pow(2, 6 + (gn::date - udct.date))::integer
+			else 0
+		end
+	)::bit(7) as datelist_int
+	from udc_typed as udct
+	join lateral generate_series(udct.date - interval '6 days', udct.date, interval '1 days') as gn
+		on 1=1
+	group by udct.user_id, udct.date, udct.browser_type, udct.datelist
+)
+select
+user_id,
+date,
+json_object_agg(browser_type, datelist_int order by browser_type) as device_activity_datelist_int
+from udc_datelist_int
+group by user_id, date
+order by user_id, date
+;
+
+-- ok. validated.
+
+
+
+----------------------------------------------------------------
+-- # A DDL for hosts_cumulated table
+--   - a host_activity_datelist which logs to see which dates each host
+--     is experiencing any activity
+
+
+create table hosts_cumulated (
+	host text,
+	date date,
+	host_activity_datelist date[],
+	primary key (host, date)
+)
+;
+-- host_activity_datelist (on last 7 days)
+
+----------------------------------------------------------------
+-- # The incremental query to generate host_activity_datelist
+
+
+insert into hosts_cumulated
+with prev_hc as (
+	select
+	*
+	from hosts_cumulated
+	where date='2023-01-07'
+),
+prev_hc_t as (
+	select
+		host, date,
+		array_agg(unn_date order by unn_date desc) as host_activity_datelist_t
+	from prev_hc
+	join lateral unnest(prev_hc.host_activity_datelist) as unn_date
+		on 1=1
+	where date - unn_date < 6
+	group by host, date
+),
+today as (
+	select 
+	host,
+	event_time::date as date,
+	array[event_time::date] as host_activity_datelist
+	from events
+	where 
+		event_time::date = '2023-01-08'
+		and host is not null
+	group by host, event_time::date
+)
+select
+coalesce(t.host, phc.host) as host,
+coalesce(t.date, (phc.date + interval '1 days')::date) as date,
+case 
+	when t.host is null
+		then phc.host_activity_datelist_t
+	when phc.host is null
+		then t.host_activity_datelist
+	else
+		t.host_activity_datelist || phc.host_activity_datelist_t
+end as host_activity_datelist
+from prev_hc_t phc
+full outer join today t
+	on phc.host = t.host
+;
+
+select * from hosts_cumulated
+
+
+----------------------------------------------------------------
+-- # A monthly, reduced fact table DDL host_activity_reduced
+
+create table host_activity_reduced (
+	host text,
+	month date,
+	hit_array integer[],
+	unique_visitors_array integer[],
+	primary key (host, month)
+);
+
+
+
+----------------------------------------------------------------
+-- # An incremental query that loads host_activity_reduced
+
+
+insert into host_activity_reduced
+with prev_har as (
+	select
+	*
+	from host_activity_reduced
+	where month = date_trunc('month', '2023-01-07'::date)
+),
+today as (
+	select
+	host,
+	count(*) as hits,
+	count(distinct user_id) as unique_visitors,
+	event_time::date as date,
+	date_trunc('month', event_time::date)::date as month
+	from events
+	where event_time::date = '2023-01-07'
+	group by host, event_time::date
+)
+select
+	coalesce(t.host, phar.host) as host,
+	coalesce(t.month, phar.month)::date as month,
+	case
+		when t.host is null
+			then phar.hit_array
+		when phar.host is null
+			then array_fill(0, array[t.date - t.month]) || array[t.hits]
+		else
+			phar.hit_array || array[t.hits]
+	end as hit_array,
+	case 
+		when t.host is null
+			then phar.unique_visitors_array
+		when phar.host is null
+			then array_fill(0, array[t.date - t.month]) || array[t.unique_visitors]
+		else
+			phar.unique_visitors_array || array[t.unique_visitors]
+	end as unique_visitors_array
+from prev_har phar
+full outer join today t
+	on phar.host = t.host
+on conflict (host, month)
+	do update set 
+	(host, month, hit_array, unique_visitors_array)
+	=
+	(EXCLUDED.host, EXCLUDED.month, EXCLUDED.hit_array, EXCLUDED.unique_visitors_array)
+;
+

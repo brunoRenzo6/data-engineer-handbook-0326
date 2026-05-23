@@ -1,0 +1,106 @@
+--week-2_lab-3
+
+--------------------------------------
+-- # Reduced fact table
+-- - First, we group by (metric, day) and do a sum aggregation
+--    - thus we loose visibility of grans smaller than that
+-- - Second, we group by month, and do a array_agg aggegation
+--    - we preserve the daily gran, it simply will be aggregate into an array
+--    - such that now, we have less rows per composite key
+
+
+create table array_metrics (
+	user_id numeric,
+	metric_name varchar,
+	month_start date,
+	metric_array real[],
+	primary key (user_id, metric_name, month_start)
+)
+;
+
+
+insert into array_metrics
+with today as (
+	select
+		user_id,
+		'site_hits' as metric_name,
+		count(1)::real as metric_value,
+		cast(event_time as date) as date
+	from events
+	where 
+		cast(event_time as date) = '2023-01-05'
+		and user_id is not null
+	group by user_id, metric_name, cast(event_time as date)
+),
+prev_array_metrics as (
+	select 
+	*
+	from array_metrics
+	where month_start = date_trunc('month', '2023-01-05'::date)::date
+)
+select
+coalesce(t.user_id, p.user_id) as user_id,
+coalesce(t.metric_name, p.metric_name) as metric_name,
+coalesce(date_trunc('month', t.date)::date, p.month_start) as month_start,
+case
+	when p.user_id is null
+		then array_fill(0, 
+					array[date_part('day', (t.date - date_trunc('month', t.date)))::integer]
+					) || array[t.metric_value]
+	when t.user_id is null
+		then p.metric_array || array[0]
+	else 
+		p.metric_array || array[t.metric_value]
+end as metric_array
+from prev_array_metrics p
+full outer join today t
+	on p.user_id = t.user_id
+	and p.metric_name = t.metric_name
+on conflict (user_id, metric_name, month_start)
+	do update set (user_id, metric_name, month_start, metric_array)
+	= (excluded.user_id, excluded.metric_name, excluded.month_start, excluded.metric_array)
+;
+
+
+
+select * from array_metrics
+--137925124111668560 {2,2,2,0,0}
+
+-- just for quick validation
+select 
+user_id, cast(event_time as date), count(1) as c
+from events 
+where user_id  = '137925124111668560'
+group by user_id, cast(event_time as date)
+order by cast(event_time as date)
+;
+-- ok. validated
+
+
+--------------------------------------
+-- ## Quick analytical queries
+
+
+-- sum metric by day
+with a as (
+	select 
+		user_id, 
+		metric_name,
+		month_start,
+		month_start + (index-1) * ('1 days'::interval) as date,
+		metric_value
+	from array_metrics
+	cross join unnest(metric_array) with ordinality as a(metric_value, index)
+	where month_start = '2023-01-01'
+)
+select
+user_id, 
+metric_name, 
+month_start, 
+date,
+sum(metric_value) as sum_metric_value
+from a
+group by user_id, metric_name, month_start, date 
+order by user_id, metric_name, month_start, date 
+;
+
