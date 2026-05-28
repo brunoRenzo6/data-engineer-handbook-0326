@@ -377,3 +377,7 @@ on conflict (host, month)
 	(EXCLUDED.host, EXCLUDED.month, EXCLUDED.hit_array, EXCLUDED.unique_visitors_array)
 ;
 
+
+select * from host_activity_reduced
+;
+
