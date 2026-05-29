@@ -4,7 +4,6 @@ services:
   spark-iceberg:
     image: tabulario/spark-iceberg
     container_name: spark-iceberg
-    build: spark/
     networks:
       iceberg_net:
     depends_on:
@@ -18,6 +17,7 @@ services:
       - AWS_ACCESS_KEY_ID=admin
       - AWS_SECRET_ACCESS_KEY=password
       - AWS_REGION=us-east-1
+      - SPARK_SUBMIT_OPTIONS=--spark.sql.sources.v2.bucketing.enabled=true
     ports:
       - 8888:8888
       - 8080:8080
